@@ -1,0 +1,238 @@
+# 使用 Alpine Linux 作为基础镜像
+FROM alpine:3.20
+
+LABEL maintainer="WeChatPadPro"
+LABEL description="WeChatPadPro with MySQL and Redis"
+
+# 设置工作目录
+WORKDIR /app
+
+# 安装必要的依赖
+RUN apk add --no-cache \
+    bash \
+    curl \
+    ca-certificates \
+    tzdata \
+    openrc \
+    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone
+
+# 安装 MySQL 8.0
+RUN apk add --no-cache \
+    mysql \
+    mysql-client \
+    && mysql_install_db --user=mysql --datadir=/var/lib/mysql
+
+# 安装 Redis
+RUN apk add --no-cache redis
+
+# 安装 RocketMQ (使用 Java 环境)
+RUN apk add --no-cache \
+    openjdk17-jre \
+    wget \
+    bash \
+    && mkdir -p /opt/rocketmq \
+    && cd /opt \
+    && wget https://archive.apache.org/rocketmq/5.1.4/rocketmq-all-5.1.4-bin-release.zip -O rocketmq.zip \
+    && unzip rocketmq.zip \
+    && mv rocketmq-all-5.1.4-bin-release rocketmq \
+    && rm rocketmq.zip \
+    && chown -R root:root /opt/rocketmq \
+    && mkdir -p /opt/rocketmq/logs /opt/rocketmq/store
+
+# 复制 Go 二进制文件（假设已编译好）
+COPY wechatpadpro-linux-amd64-vios18.61-861 ./wechatpadpro
+RUN chmod +x ./wechatpadpro
+
+# 复制配置文件
+COPY wechat_mmtls.sql ./mysql_init.sql
+
+# 创建必要的目录
+RUN mkdir -p /var/lib/mysql /var/log/mysql \
+    /var/lib/redis /var/log/redis \
+    /var/log/rocketmq \
+    /app/logs /app/assets /app/static /app/data
+
+# 设置 MySQL 配置
+RUN echo "[mysqld]" > /etc/my.cnf \
+    && echo "datadir=/var/lib/mysql" >> /etc/my.cnf \
+    && echo "socket=/var/run/mysqld/mysqld.sock" >> /etc/my.cnf \
+    && echo "port=3306" >> /etc/my.cnf \
+    && echo "user=mysql" >> /etc/my.cnf \
+    && echo "bind-address=0.0.0.0" >> /etc/my.cnf \
+    && echo "skip-name-resolve" >> /etc/my.cnf \
+    && echo "character-set-server=utf8mb4" >> /etc/my.cnf \
+    && echo "collation-server=utf8mb4_unicode_ci" >> /etc/my.cnf \
+    && echo "default-authentication-plugin=mysql_native_password" >> /etc/my.cnf
+
+# 设置 Redis 配置
+RUN echo "daemonize no" > /etc/redis.conf \
+    && echo "bind 0.0.0.0" >> /etc/redis.conf \
+    && echo "port 6379" >> /etc/redis.conf \
+    && echo "dir /var/lib/redis" >> /etc/redis.conf \
+    && echo "logfile /var/log/redis/redis.log" >> /etc/redis.conf \
+    && echo "appendonly yes" >> /etc/redis.conf \
+    && echo "appendfilename appendonly.aof" >> /etc/redis.conf
+
+# 设置 RocketMQ NameServer 配置
+RUN echo "listenPort=9876" > /opt/rocketmq/conf/namesrv.properties
+
+# 设置 RocketMQ Broker 配置
+RUN echo "brokerClusterName=DefaultCluster" > /opt/rocketmq/conf/broker.properties \
+    && echo "brokerName=broker-a" >> /opt/rocketmq/conf/broker.properties \
+    && echo "brokerId=0" >> /opt/rocketmq/conf/broker.properties \
+    && echo "deleteWhen=04" >> /opt/rocketmq/conf/broker.properties \
+    && echo "fileReservedTime=48" >> /opt/rocketmq/conf/broker.properties \
+    && echo "brokerRole=ASYNC_MASTER" >> /opt/rocketmq/conf/broker.properties \
+    && echo "flushDiskType=ASYNC_FLUSH" >> /opt/rocketmq/conf/broker.properties \
+    && echo "namesrvAddr=127.0.0.1:9876" >> /opt/rocketmq/conf/broker.properties \
+    && echo "listenPort=10911" >> /opt/rocketmq/conf/broker.properties \
+    && echo "storePathRootDir=/opt/rocketmq/store" >> /opt/rocketmq/conf/broker.properties \
+    && echo "storePathCommitLog=/opt/rocketmq/store/commitlog" >> /opt/rocketmq/conf/broker.properties \
+    && echo "autoCreateTopicEnable=true" >> /opt/rocketmq/conf/broker.properties \
+    && echo "autoCreateSubscriptionGroup=true" >> /opt/rocketmq/conf/broker.properties
+
+# 复制启动脚本
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# 复制进程管理脚本
+COPY supervisord.conf /etc/supervisord.conf
+
+# 安装 supervisord 用于进程管理
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    && pip3 install --break-system-packages supervisor
+
+# 创建 MySQL 启动目录
+RUN mkdir -p /var/run/mysqld \
+    && chown -R mysql:mysql /var/lib/mysql /var/run/mysqld /var/log/mysql
+
+# 暴露端口
+# 3306 - MySQL
+# 6379 - Redis
+# 9876 - RocketMQ NameServer
+# 10911 - RocketMQ Broker
+# 10909 - RocketMQ Broker HA
+# 8080 - API 端口
+# 1238 - 管理端口
+# 8099 - MCP 服务端口 (可选)
+EXPOSE 3306 6379 9876 10911 10909 8080 1238 8099
+
+# ============================================
+# 环境变量 - 所有默认值
+# ============================================
+
+# ========== 基础系统配置 ==========
+ENV HOST=0.0.0.0
+ENV PORT=1238
+ENV DEBUG=true
+ENV ADMIN_KEY=7Kf9mP2xR5nQ8sV3wY6zA1bC4dE7gH0j
+ENV VERSION=1.0.0
+ENV API_VERSION=""
+ENV MCP_PORT=8099
+ENV GH_WXID=""
+ENV TZ=Asia/Shanghai
+
+# ========== MySQL 配置 ==========
+ENV MYSQL_ROOT_PASSWORD=9mK2pR5nQ8sV3wY6zA1bC4dE7gH0jM3p
+ENV MYSQL_DATABASE=weixin
+ENV MYSQL_USER=weixin
+ENV MYSQL_PASSWORD=5nQ8sV3wY6zA1bC4dE7gH0jM3pR6tS9v
+ENV DB_HOST=127.0.0.1
+ENV DB_PORT=3306
+ENV DB_USERNAME=weixin
+ENV MYSQL_CONNECT_STR=weixin:5nQ8sV3wY6zA1bC4dE7gH0jM3pR6tS9v@tcp(127.0.0.1:3306)/weixin?charset=utf8mb4&parseTime=true&loc=Local
+ENV MYSQL_MAX_OPEN_CONN=100
+ENV MYSQL_MAX_IDLE_CONN=10
+ENV MYSQL_MAX_LIFETIME=1h
+
+# ========== Redis 配置 ==========
+ENV REDIS_HOST=127.0.0.1
+ENV REDIS_PORT=6379
+ENV REDIS_PASS=8sV3wY6zA1bC4dE7gH0jM3pR6tS9vW2yK
+ENV REDIS_DB=1
+ENV REDIS_MAX_IDLE=30
+ENV REDIS_MAX_ACTIVE=100
+ENV REDIS_IDLE_TIMEOUT=5000
+ENV REDIS_MAX_CONN_LIFETIME=3600
+ENV REDIS_CONNECT_TIMEOUT=5000
+ENV REDIS_READ_TIMEOUT=10000
+ENV REDIS_WRITE_TIMEOUT=10000
+ENV REDIS_POOL_SIZE=10
+ENV REDIS_MIN_IDLE_CONN=5
+ENV REDIS_MAX_RETRIES=3
+ENV REDIS_DIAL_TIMEOUT=5s
+ENV REDIS_READ_TIMEOUT_SEC=3s
+ENV REDIS_WRITE_TIMEOUT_SEC=3s
+
+# ========== Webhook 配置 ==========
+ENV WEBHOOK_ENABLED=true
+ENV WEBHOOK_TIMEOUT=10
+ENV WEBHOOK_MAX_RETRIES=3
+ENV WEBHOOK_QUEUE_SIZE=1000
+ENV WEBHOOK_BATCH_SIZE=20
+ENV WEBHOOK_DIRECT_STREAM=true
+
+# ========== WebSocket 配置 ==========
+ENV WS_HANDSHAKE_TIMEOUT=10
+ENV WS_READ_BUFFER_SIZE=4096
+ENV WS_WRITE_BUFFER_SIZE=4096
+ENV WS_READ_DEADLINE=120
+ENV WS_WRITE_DEADLINE=60
+ENV WS_PING_INTERVAL=25
+ENV WS_CONNECTION_CHECK_INTERVAL=45
+ENV WS_MAX_MESSAGE_SIZE=8192
+
+# ========== Worker 配置 ==========
+ENV WORKER_POOL_SIZE=500
+ENV MAX_WORKER_TASK_LEN=1000
+ENV TASK_EXEC_WAIT_TIMES=500
+
+# ========== Auth 配置 ==========
+ENV TOKEN_EXPIRE=24h
+ENV REFRESH_EXPIRE=168h
+ENV AUTO_AUTH_INTERVAL=30m
+
+# ========== Web 配置 ==========
+ENV WEB_DOMAIN=localhost:1238
+ENV WEB_TASK_NAME=""
+ENV WEB_TASK_APP_NUMBER=""
+ENV NEWS_SYN_WXID=true
+ENV DT=true
+
+# ========== 消息队列配置 ==========
+ENV TOPIC=wx_sync_msg_topic
+ENV ROCKET_MQ_ENABLED=true
+ENV ROCKET_MQ_HOST=127.0.0.1:9876
+ENV ROCKET_ACCESS_KEY=2pR6tS9vW2yK5nQ8sV3wY6zA1bC4dE7gH
+ENV ROCKET_SECRET_KEY=4dE7gH0jM3pR6tS9vW2yK5nQ8sV3wY6zA1bC!@#
+ENV RABBIT_MQ_ENABLED=false
+ENV RABBIT_MQ_URL=amqp://user:6tS9vW2yK5nQ8sV3wY6zA1bC4dE7gH0jM3p@127.0.0.1:5672/
+ENV KAFKA_ENABLED=false
+ENV KAFKA_URL=
+ENV KAFKA_USERNAME=
+ENV KAFKA_PASSWORD=
+
+# ========== 任务配置 ==========
+ENV TASK_RETRY_COUNT=3
+ENV TASK_RETRY_INTERVAL=5
+ENV HEARTBEAT_INTERVAL=25
+ENV AUTO_SYNC_INTERVAL_MINUTES=30
+ENV QUEUE_EXPIRE_TIME=86400
+
+# ========== 集群配置 ==========
+ENV CLUSTER_NAME=
+ENV ZK_ADDR=
+ENV ETCD_ADDR=
+
+# ========== 禁用命令配置 ==========
+ENV DISABLED_CMD_LIST=
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:1238/health || exit 1
+
+# 启动脚本
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

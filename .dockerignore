@@ -1,0 +1,56 @@
+# Git 相关
+.git
+.gitignore
+.gitattributes
+.git/logs/
+
+# IDE 相关
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+thumbs.db
+
+# 文档
+*.md
+!README.md
+
+# 图片
+img*.png
+*.jpg
+*.jpeg
+*.gif
+*.JPG
+*.JPEG
+
+# 发布包
+releases/
+*.zip
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+.env.local
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# 不需要的目录
+.docker/
+.claude/
+static/doc/
+static/qrcode/
+
+# 其他数据库工具
+win数据库/
